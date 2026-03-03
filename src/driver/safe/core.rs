@@ -2499,7 +2499,11 @@ mod tests {
                 cu_device,
             )
         };
-        assert_eq!(r, sys::CUresult::CUDA_SUCCESS, "cuCtxCreate_v3 failed: {r:?}");
+        assert_eq!(
+            r,
+            sys::CUresult::CUDA_SUCCESS,
+            "cuCtxCreate_v3 failed: {r:?}"
+        );
         assert!(!cu_ctx.is_null());
         (cu_device, cu_ctx)
     }
