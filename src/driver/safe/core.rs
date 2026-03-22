@@ -779,11 +779,13 @@ unsafe impl<T> Sync for CudaSlice<T> {}
 impl<T> Drop for CudaSlice<T> {
     fn drop(&mut self) {
         let ctx = &self.stream.ctx;
-        if let Some(read) = self.read.as_ref() {
-            ctx.record_err(self.stream.wait(read));
-        }
-        if let Some(write) = self.write.as_ref() {
-            ctx.record_err(self.stream.wait(write));
+        if ctx.is_event_tracking() {
+            if let Some(read) = self.read.as_ref() {
+                ctx.record_err(self.stream.wait(read));
+            }
+            if let Some(write) = self.write.as_ref() {
+                ctx.record_err(self.stream.wait(write));
+            }
         }
         if ctx.has_async_alloc {
             ctx.record_err(unsafe {
@@ -1142,10 +1144,12 @@ impl<T> DevicePtr<T> for CudaSlice<T> {
                 stream.ctx.record_err(stream.wait(write));
             }
         }
-        (
-            self.cu_device_ptr,
-            SyncOnDrop::record_event(&self.read, stream),
-        )
+        let sync = if self.stream.context().is_event_tracking() {
+            SyncOnDrop::record_event(&self.read, stream)
+        } else {
+            SyncOnDrop::Sync(None)
+        };
+        (self.cu_device_ptr, sync)
     }
 }
 
@@ -1156,7 +1160,12 @@ impl<T> DevicePtr<T> for CudaView<'_, T> {
                 stream.ctx.record_err(stream.wait(write));
             }
         }
-        (self.ptr, SyncOnDrop::record_event(self.read, stream))
+        let sync = if self.stream.context().is_event_tracking() {
+            SyncOnDrop::record_event(self.read, stream)
+        } else {
+            SyncOnDrop::Sync(None)
+        };
+        (self.ptr, sync)
     }
 }
 
@@ -1167,7 +1176,12 @@ impl<T> DevicePtr<T> for CudaViewMut<'_, T> {
                 stream.ctx.record_err(stream.wait(write));
             }
         }
-        (self.ptr, SyncOnDrop::record_event(self.read, stream))
+        let sync = if self.stream.context().is_event_tracking() {
+            SyncOnDrop::record_event(self.read, stream)
+        } else {
+            SyncOnDrop::Sync(None)
+        };
+        (self.ptr, sync)
     }
 }
 
@@ -1206,10 +1220,12 @@ impl<T> DevicePtrMut<T> for CudaSlice<T> {
                 stream.ctx.record_err(stream.wait(write));
             }
         }
-        (
-            self.cu_device_ptr,
-            SyncOnDrop::record_event(&self.write, stream),
-        )
+        let sync = if self.stream.context().is_event_tracking() {
+            SyncOnDrop::record_event(&self.write, stream)
+        } else {
+            SyncOnDrop::Sync(None)
+        };
+        (self.cu_device_ptr, sync)
     }
 }
 
@@ -1226,7 +1242,12 @@ impl<T> DevicePtrMut<T> for CudaViewMut<'_, T> {
                 stream.ctx.record_err(stream.wait(write));
             }
         }
-        (self.ptr, SyncOnDrop::record_event(self.write, stream))
+        let sync = if self.stream.context().is_event_tracking() {
+            SyncOnDrop::record_event(self.write, stream)
+        } else {
+            SyncOnDrop::Sync(None)
+        };
+        (self.ptr, sync)
     }
 }
 
