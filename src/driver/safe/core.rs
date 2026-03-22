@@ -765,7 +765,8 @@ impl CudaStream {
 /// This object is thread safe.
 #[derive(Debug)]
 pub struct CudaSlice<T> {
-    pub(crate) cu_device_ptr: sys::CUdeviceptr,
+    /// Raw CUDA device pointer. Public for direct `cuMemcpyDtoDAsync` bypassing events.
+    pub cu_device_ptr: sys::CUdeviceptr,
     pub(crate) len: usize,
     pub(crate) read: Option<CudaEvent>,
     pub(crate) write: Option<CudaEvent>,
