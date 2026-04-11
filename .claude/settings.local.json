@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh pr:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(git stash:*)",
+      "Bash(ssh paulcheddar:*)",
+      "Read(//Users/w4nderlust/.ssh/**)",
+      "Bash(ssh paul-cheddar:*)",
+      "Bash(rsync:*)",
+      "Bash(git remote:*)",
+      "Bash(CORE=\"/home/piero/.cargo/git/checkouts/cudarc-9b24e3be24f29ba5/e19a794/src/driver/safe/core.rs\")"
+    ]
+  }
+}

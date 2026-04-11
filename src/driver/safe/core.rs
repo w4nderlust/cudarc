@@ -768,6 +768,9 @@ pub struct CudaSlice<T> {
     pub(crate) write: Option<CudaEvent>,
     pub(crate) stream: Arc<CudaStream>,
     pub(crate) marker: PhantomData<*const T>,
+    /// When true, this slice is a sub-region of an arena/pool allocation.
+    /// Drop will NOT free the underlying memory (the arena owns it).
+    pub non_owning: bool,
 }
 
 unsafe impl<T> Send for CudaSlice<T> {}
@@ -775,6 +778,10 @@ unsafe impl<T> Sync for CudaSlice<T> {}
 
 impl<T> Drop for CudaSlice<T> {
     fn drop(&mut self) {
+        // Non-owning slices (from arena/pool allocation) don't free memory.
+        if self.non_owning {
+            return;
+        }
         let ctx = &self.stream.ctx;
         if ctx.is_event_tracking() {
             if let Some(read) = self.read.as_ref() {
@@ -1476,6 +1483,7 @@ impl CudaStream {
             write: None,
             stream: self.clone(),
             marker: PhantomData,
+            non_owning: false,
         })
     }
 
@@ -1507,6 +1515,7 @@ impl CudaStream {
             write,
             stream: self.clone(),
             marker: PhantomData,
+            non_owning: false,
         })
     }
 
@@ -2431,6 +2440,7 @@ impl CudaStream {
             write,
             stream: self.clone(),
             marker: PhantomData,
+            non_owning: false,
         }
     }
 }
@@ -2837,5 +2847,101 @@ mod tests {
             assert_eq!(result, std::vec![4.0f32, 5.0, 6.0]);
         });
         handle.join().unwrap();
+    }
+
+    /// Reproduces the hang that occurs when CudaSlices allocated with event
+    /// tracking enabled are used during CUDA graph capture after
+    /// disable_event_tracking() is called.
+    ///
+    /// The scenario (from real ML inference workloads):
+    /// 1. Allocate CudaSlices with event tracking ON (default). Each slice
+    ///    gets CudaEvents in its read/write fields.
+    /// 2. Call disable_event_tracking() to reduce overhead before graph capture.
+    /// 3. Begin CUDA graph capture on a stream.
+    /// 4. Use the pre-allocated slices inside the capture (e.g., memcpy_dtod).
+    ///
+    /// Without the fix, device_ptr()/device_ptr_mut() unconditionally return
+    /// SyncOnDrop::Record with the stale events. When SyncOnDrop drops, it
+    /// calls cuEventRecord(stale_event, capturing_stream), injecting external
+    /// event nodes into the graph. On graph replay this can hang or produce
+    /// incorrect synchronization because the events were created outside the
+    /// capture and carry state from a different execution context.
+    ///
+    /// The fix gates SyncOnDrop on is_event_tracking(), returning
+    /// SyncOnDrop::Sync(None) when tracking is disabled, which avoids the
+    /// stale event operations entirely.
+    #[test]
+    fn test_graph_capture_after_disable_event_tracking() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        // Step 1: Allocate slices with event tracking ON.
+        // These slices have Some(CudaEvent) in their read/write fields.
+        let src = stream.clone_htod(&[1.0f32, 2.0, 3.0, 4.0]).unwrap();
+        let mut dst = stream.alloc_zeros::<f32>(4).unwrap();
+        stream.synchronize().unwrap();
+
+        // Step 2: Disable event tracking.
+        unsafe { ctx.disable_event_tracking() };
+
+        // Step 3: Capture a graph that uses the pre-allocated slices.
+        // Without the fix, the SyncOnDrop from device_ptr() would call
+        // cuEventRecord on stale events inside the capturing stream.
+        stream
+            .begin_capture(
+                sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
+            )
+            .unwrap();
+        stream.memcpy_dtod(&src, &mut dst).unwrap();
+        let graph = stream
+            .end_capture(
+                sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+            )
+            .unwrap()
+            .expect("graph capture should succeed");
+
+        // Step 4: Launch the graph (multiple times to exercise replay).
+        for _ in 0..3 {
+            graph.launch().unwrap();
+        }
+        stream.synchronize().unwrap();
+
+        // Re-enable event tracking so clone_dtoh works normally.
+        unsafe { ctx.enable_event_tracking() };
+        let result = stream.clone_dtoh(&dst).unwrap();
+        assert_eq!(result, vec![1.0f32, 2.0, 3.0, 4.0]);
+    }
+
+    /// Exercises the Drop path for CudaSlice: slices allocated with event
+    /// tracking enabled are dropped after disable_event_tracking() is called.
+    ///
+    /// Without the fix, Drop unconditionally calls stream.wait(read) and
+    /// stream.wait(write) on the stale events. While this is merely
+    /// unnecessary overhead in the single-stream case, it becomes a problem
+    /// when another stream on the same context is performing graph capture,
+    /// because the wait can interfere with the capture's synchronization
+    /// context. The fix skips these waits when event tracking is disabled.
+    #[test]
+    fn test_drop_stale_slices_after_disable_event_tracking() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.new_stream().unwrap();
+
+        // Allocate slices with event tracking ON.
+        // These slices have Some(CudaEvent) in their read/write fields.
+        let a = stream.alloc_zeros::<f32>(64).unwrap();
+        let b = stream.clone_htod(&[1.0f32; 64]).unwrap();
+        stream.synchronize().unwrap();
+
+        // Disable event tracking.
+        unsafe { ctx.disable_event_tracking() };
+
+        // Drop the stale slices. Without the fix, Drop calls
+        // stream.wait(event) on the stale events unnecessarily.
+        // With the fix, the waits are skipped.
+        drop(a);
+        drop(b);
+
+        // Verify no errors were recorded.
+        ctx.check_err().unwrap();
     }
 }
