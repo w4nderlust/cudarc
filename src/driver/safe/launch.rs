@@ -53,6 +53,8 @@ pub struct LaunchArgs<'a> {
     pub(super) records: Vec<&'a CudaEvent>,
     pub(super) args: Vec<*mut std::ffi::c_void>,
     pub(super) flags: Option<sys::CUevent_flags>,
+    /// When true, skip bind_to_thread on launch (fast path for single-device).
+    pub(super) skip_bind: bool,
 }
 
 impl CudaStream {
@@ -68,6 +70,21 @@ impl CudaStream {
             records: Vec::new(),
             args: Vec::new(),
             flags: None,
+            skip_bind: false,
+        }
+    }
+
+    /// Fast-path launch builder that skips bind_to_thread on launch.
+    /// Only safe for single-device inference with context already current.
+    pub fn launch_builder_fast<'a>(&'a self, func: &'a CudaFunction) -> LaunchArgs<'a> {
+        LaunchArgs {
+            stream: self,
+            func,
+            waits: Vec::new(),
+            records: Vec::new(),
+            args: Vec::new(),
+            flags: None,
+            skip_bind: true,
         }
     }
 }
@@ -209,7 +226,9 @@ impl LaunchArgs<'_> {
         &mut self,
         cfg: LaunchConfig,
     ) -> Result<Option<(CudaEvent, CudaEvent)>, DriverError> {
-        self.stream.ctx.bind_to_thread()?;
+        if !self.skip_bind {
+            self.stream.ctx.bind_to_thread()?;
+        }
         for &event in self.waits.iter() {
             self.stream.wait(event)?;
         }
