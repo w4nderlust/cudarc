@@ -82,6 +82,43 @@ impl CudaGraph {
         unsafe { result::graph::launch(self.cu_graph_exec, self.stream.cu_stream) }
     }
 
+    /// Update this graph's executable from a newly captured graph.
+    /// The stream must have just completed `end_capture`.
+    ///
+    /// Uses `cuGraphExecUpdate` to update in-place (fast, ~0.1ms).
+    /// Falls back to destroy + re-instantiate if topology changed (~3ms).
+    ///
+    /// Returns the new CudaGraph (self is consumed because cu_graph is replaced).
+    pub fn update_from_capture(
+        mut self,
+        stream: &Arc<CudaStream>,
+        flags: sys::CUgraphInstantiate_flags,
+    ) -> Result<Self, DriverError> {
+        stream.ctx.bind_to_thread()?;
+        let new_graph = unsafe { result::stream::end_capture(stream.cu_stream) }?;
+        if new_graph.is_null() {
+            return Err(DriverError(
+                sys::cudaError_enum::CUDA_ERROR_INVALID_VALUE,
+            ));
+        }
+
+        // Destroy old graph (topology), keep executable
+        if !self.cu_graph.is_null() {
+            unsafe { result::graph::destroy(self.cu_graph) }?;
+        }
+        self.cu_graph = new_graph;
+
+        // Try in-place update (fast path)
+        let updated = unsafe { result::graph::exec_update(self.cu_graph_exec, self.cu_graph) }?;
+        if !updated {
+            // Topology changed too much -- re-instantiate (slow path)
+            unsafe { result::graph::exec_destroy(self.cu_graph_exec) }?;
+            self.cu_graph_exec = unsafe { result::graph::instantiate(self.cu_graph, flags) }?;
+        }
+
+        Ok(self)
+    }
+
     /// Pre-uploads the graph's resources to the device so that the
     /// first [CudaGraph::launch()] does not incur setup overhead.
     ///

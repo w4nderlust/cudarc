@@ -1475,6 +1475,26 @@ pub mod graph {
         sys::cuGraphLaunch(graph_exec, stream).result()
     }
 
+    /// Update a graph executable with a new captured graph.
+    /// Returns Ok(true) if update succeeded in-place, Ok(false) if failed
+    /// (topology changed too much -- caller should re-instantiate).
+    /// # Safety
+    /// graph_exec and graph must be valid
+    pub unsafe fn exec_update(
+        graph_exec: sys::CUgraphExec,
+        graph: sys::CUgraph,
+    ) -> Result<bool, DriverError> {
+        let mut error_node: sys::CUgraphNode = std::ptr::null_mut();
+        let mut update_result: sys::CUgraphExecUpdateResult = 0;
+        let stat =
+            sys::cuGraphExecUpdate(graph_exec, graph, &mut error_node, &mut update_result);
+        match stat {
+            sys::cudaError_enum::CUDA_SUCCESS => Ok(true),
+            sys::cudaError_enum::CUDA_ERROR_GRAPH_EXEC_UPDATE_FAILURE => Ok(false),
+            other => Err(DriverError(other)),
+        }
+    }
+
     /// See [cuda docs](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__GRAPH.html#group__CUDA__GRAPH_1gdb81438b083d42a26693f6f2bce150cd)
     /// # Safety
     /// graph_exec and stream must be valid
